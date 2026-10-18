@@ -8,6 +8,9 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=IBM+Plex+Sans+Thai:wght@400;600&family=Manrope:wght@400;600;800&display=swap" rel="stylesheet" />
 <link rel="stylesheet" href="/static/style.css" />
+<!-- MediaPipe Hands CDN สำหรับวาดโครงกระดูกมือบนหน้าจอ -->
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
 </head>
 <body>
 <div class="shell">
@@ -67,31 +70,59 @@
     <section data-view="train" hidden>
       <header class="head"><div><h1>Train &amp; Collect Studio</h1><p class="muted">Collect hand gesture data and retrain your model directly from the browser.</p></div>
         <span class="badge ok">Live Production Mode</span></header>
-      <div class="train-grid">
-        <!-- กล่องเก็บข้อมูลท่าทางลง CSV -->
-        <div class="panel">
-          <h2>1. Data Collection</h2>
-          <label for="collect-label">Sign Label (ชื่อท่าทาง เช่น 'hello', 'no_sign')</label>
-          <input id="collect-label" type="text" placeholder="พิมพ์ชื่อท่าทาง..." />
-          <div style="margin-top:12px;" class="row wrap">
-            <button type="button" id="btn-record" class="btn primary">Record Samples (5 วินาที)</button>
+      
+      <div class="live-grid" style="margin-bottom: 24px;">
+        <!-- กล้องหน้า Train พร้อม Overlay และ Countdown -->
+        <div>
+          <div class="cam" id="train-cam" style="aspect-ratio: 16/10; position: relative;">
+            <video id="train-webcam" autoplay playsinline muted style="width:100%;height:100%;object-fit:cover;transform:scaleX(-1);display:block;"></video>
+            <!-- Canvas วาดเส้นข้อต่อนิ้วมือ -->
+            <canvas id="train-overlay" width="640" height="480" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transform:scaleX(-1);pointer-events:none;"></canvas>
+            <canvas id="train-capture" hidden width="320" height="240"></canvas>
+            
+            <i class="c tl"></i><i class="c tr"></i>
+            <div class="cam-tag"><span id="train-cam-state">Camera off</span></div>
+
+            <!-- ป้าย REC มุมขวาบน (ไม่บังจอ) -->
+            <div id="train-rec-badge" class="rec-badge" style="display:none;">
+              <span class="rec-dot"></span> <span id="train-rec-text">REC 5s</span>
+            </div>
+            
+            <!-- ตัวเลขนับถอยหลัง 3 2 1 กลางจอใหญ่ๆ -->
+            <div id="train-countdown" class="train-overlay-count" style="display:none;">3</div>
           </div>
-          <p id="collect-status" class="muted small" style="margin-top:8px;">เปิดกล้องใน Live Studio ก่อนเริ่มเก็บข้อมูล</p>
+
+          <div style="margin-top: 10px;">
+            <button type="button" id="btn-train-cam" class="btn">Open Camera</button>
+          </div>
         </div>
 
-        <!-- กล่องสั่งเทรนโมเดล -->
-        <form class="panel" id="cfg" novalidate>
-          <h2>2. Model Training</h2>
-          <p class="muted small">เทรน RandomForest (2 มือ, 126 landmark features) จากข้อมูลใน data/gestures.csv</p>
-          <p id="cfg-err" class="err" role="alert"></p>
-          <div class="row wrap" style="margin-top:16px;">
-            <button type="submit" id="t-start" class="btn primary">Start Real Training</button>
+        <aside class="stack">
+          <!-- บันทึกข้อมูลท่าทาง -->
+          <div class="panel">
+            <h2>1. Data Collection</h2>
+            <label for="collect-label">Sign Label (ชื่อท่าทาง เช่น 'hello', 'no_sign')</label>
+            <input id="collect-label" type="text" placeholder="พิมพ์ชื่อท่าทาง..." />
+            <div style="margin-top:12px;" class="row wrap">
+              <button type="button" id="btn-record" class="btn primary">Record Samples (5 วินาที)</button>
+            </div>
+            <p id="collect-status" class="muted small" style="margin-top:8px;">กดปุ่ม Open Camera ก่อนเริ่มบันทึก</p>
           </div>
-          <div style="margin-top:16px;">
-            <div class="mono small" id="t-meta">Status: Ready</div>
-            <div class="bar"><span id="t-fill"></span></div>
-          </div>
-        </form>
+
+          <!-- สั่งเทรนโมเดล -->
+          <form class="panel" id="cfg" novalidate>
+            <h2>2. Model Training</h2>
+            <p class="muted small">เทรน RandomForest (2 มือ, 126 landmark features) จากข้อมูลใน data/gestures.csv</p>
+            <p id="cfg-err" class="err" role="alert"></p>
+            <div class="row wrap" style="margin-top:12px;">
+              <button type="submit" id="t-start" class="btn primary">Start Real Training</button>
+            </div>
+            <div style="margin-top:16px;">
+              <div class="mono small" id="t-meta">Status: Ready</div>
+              <div class="bar"><span id="t-fill"></span></div>
+            </div>
+          </form>
+        </aside>
       </div>
     </section>
 

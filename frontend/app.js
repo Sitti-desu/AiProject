@@ -4,8 +4,8 @@
  *   py -3.11 -m uvicorn backend.main:app --reload --port 8000   → open http://localhost:8000
  */
 const $ = (s) => document.querySelector(s);
-const IGNORE_LABEL = "no_sign";        // backend IGNORE_LABEL — never added to the sentence
-const SERVER_CONF_THRESHOLD = 55;      // backend CONF_THRESHOLD (0.55), in %
+const IGNORE_LABEL = "no_sign";
+const SERVER_CONF_THRESHOLD = 55;
 const fmtTime = (s) => String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0");
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 
@@ -21,7 +21,7 @@ route();
 
 function banner(msg) { const b = $("#banner"); b.textContent = msg || ""; b.hidden = !msg; }
 
-/* ---------- Server status (shared) ---------- */
+/* ---------- Server status ---------- */
 const S = { modelLoaded: null, labels: [] };
 
 async function checkModel() {
@@ -33,7 +33,7 @@ async function checkModel() {
     $("#label-list").innerHTML = S.labels.length
       ? S.labels.map((l) => `<span class="chip${l === IGNORE_LABEL ? " muted" : ""}">${esc(l)}</span>`).join("")
       : '<span class="muted">No model loaded.</span>';
-    if (!S.modelLoaded) banner("No trained model found on the server (models/model.pkl). Run train_model.py or use Train Studio.");
+    if (!S.modelLoaded) banner("No trained model found on the server (models/model.pkl).");
     checkSnapshot();
   } catch {
     S.modelLoaded = null;
@@ -42,7 +42,7 @@ async function checkModel() {
   }
 }
 
-/* ================= LIVE ================= */
+/* ================= LIVE STUDIO ================= */
 const L = { ws: null, stream: null, timer: null, running: false, paused: false, fatal: false, t0: 0, n: 0, sent: [], lat: null, frames: 0, segs: [], dur: null };
 const video = $("#webcam"), canvas = $("#capture"), ctx = canvas.getContext("2d");
 canvas.width = 320; canvas.height = 240;
@@ -50,12 +50,11 @@ canvas.width = 320; canvas.height = 240;
 function setConn(text, cls) { $("#conn-state").textContent = text; $("#conn-dot").className = "dot " + (cls || ""); }
 
 async function startCamera() {
-  if (!navigator.mediaDevices?.getUserMedia) throw new Error("This browser does not support camera access. Use a current Chrome, Edge, Safari or Firefox.");
+  if (!navigator.mediaDevices?.getUserMedia) throw new Error("This browser does not support camera access.");
   try {
     L.stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: false });
   } catch (e) {
-    const m = { NotAllowedError: "Camera access was blocked. Allow camera access and press Start again.", NotFoundError: "No camera was found.", NotReadableError: "The camera is in use by another app. Close it and press Start again." };
-    throw new Error(m[e.name] || "The camera could not start (" + e.name + ").");
+    throw new Error("Cannot access camera: " + e.name);
   }
   video.srcObject = L.stream;
   $("#cam").classList.add("on"); $("#cam-empty").hidden = true;
@@ -75,7 +74,7 @@ function connectWS() {
     stopFrames();
     if (L.running && !L.fatal) { setConn("Reconnecting…", "bad"); setTimeout(() => L.running && !L.fatal && connectWS(), 2000); }
   };
-  L.ws.onmessage = (e) => { try { onPrediction(JSON.parse(e.data)); } catch { /* ignore malformed message */ } };
+  L.ws.onmessage = (e) => { try { onPrediction(JSON.parse(e.data)); } catch {} };
 }
 
 function startFrames() {
@@ -109,10 +108,6 @@ function onPrediction(d) {
   now.classList.toggle("idle", !label || isNoSign);
 
   $("#conf").textContent = pct.toFixed(1) + "%";
-  $("#conf-note").textContent = !d.hand_detected
-    ? "no hand — nothing to classify"
-    : low ? "below your " + thr + "% display threshold — treat as uncertain"
-    : "confidence of this frame (not model accuracy)";
   $("#meter-fill").style.width = pct + "%";
   $("#meter-fill").classList.toggle("low", low);
   $("#meter").setAttribute("aria-valuenow", Math.round(pct));
@@ -155,7 +150,6 @@ function renderTranscript() {
 $("#btn-start").addEventListener("click", async () => {
   if (L.running) return stopSession();
   banner(""); L.fatal = false;
-  if (S.modelLoaded === false) return banner("The server has no trained model (models/model.pkl).");
   try { await startCamera(); } catch (e) { return banner(e.message); }
   L.running = true; L.paused = false; L.n = 0; L.frames = 0; L.lat = null; L.t0 = Date.now(); L.serverWords = [];
   $("#btn-start").textContent = "Stop session"; $("#btn-pause").disabled = false; setConn("Connecting…");
@@ -185,51 +179,284 @@ $("#btn-copy").addEventListener("click", async (e) => {
 addEventListener("pagehide", stopSession);
 $("#thr-server").textContent = SERVER_CONF_THRESHOLD + "%";
 
-/* ================= TRAIN (Real Server Training) ================= */
-const T = { state: "idle" };
+/* ================= TRAIN STUDIO (CAMERA, OVERLAY, COUNTDOWN) ================= */
+const trainVideo = $("#train-webcam");
+const trainCanvas = $("#train-capture");
+const trainCtx = trainCanvas ? trainCanvas.getContext("2d") : null;
+const trainOverlay = $("#train-overlay");
+const overlayCtx = trainOverlay ? trainOverlay.getContext("2d") : null;
 
-function setT(s) {
-  T.state = s;
-  const names = { idle: "Idle", training: "Training in progress...", completed: "Completed", error: "Failed" };
-  const el = $("#t-state"); el.textContent = names[s] || s; el.className = "badge" + (s === "completed" ? " ok" : s === "error" ? " warn" : "");
-  $("#t-start").disabled = s === "training";
+let trainStream = null;
+let isCollecting = false;
+let mpHandsDetector = null;
+let animFrameId = null;
+
+// ข้อต่อนิ้วมือของ MediaPipe Hands 21 จุด
+const HAND_CONNECTIONS = [
+  [0, 1], [1, 2], [2, 3], [3, 4],
+  [0, 5], [5, 6], [6, 7], [7, 8],
+  [5, 9], [9, 10], [10, 11], [11, 12],
+  [9, 13], [13, 14], [14, 15], [15, 16],
+  [13, 17], [17, 18], [18, 19], [19, 20],
+  [0, 17]
+];
+
+function initMediaPipeHands() {
+  if (mpHandsDetector || typeof Hands === "undefined") return;
+  mpHandsDetector = new Hands({
+    locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+  });
+  mpHandsDetector.setOptions({
+    maxNumHands: 2,
+    modelComplexity: 1,
+    minDetectionConfidence: 0.5,
+    minTrackingConfidence: 0.5
+  });
+  mpHandsDetector.onResults(drawHandLandmarks);
 }
 
-$("#cfg").addEventListener("submit", async (ev) => {
-  ev.preventDefault();
-  const err = $("#cfg-err");
-  err.textContent = "";
+function drawHandLandmarks(results) {
+  if (!overlayCtx || !trainOverlay) return;
+  overlayCtx.clearRect(0, 0, trainOverlay.width, trainOverlay.height);
 
-  setT("training");
-  $("#t-meta").textContent = "Server is executing scripts/train_model.py...";
-  $("#t-fill").style.width = "50%";
+  if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+    for (const landmarks of results.multiHandLandmarks) {
+      // 1. เส้นกระดูกนิ้วมือ
+      overlayCtx.strokeStyle = "#00e5ff";
+      overlayCtx.lineWidth = 3;
+      for (const [start, end] of HAND_CONNECTIONS) {
+        const p1 = landmarks[start];
+        const p2 = landmarks[end];
+        overlayCtx.beginPath();
+        overlayCtx.moveTo(p1.x * trainOverlay.width, p1.y * trainOverlay.height);
+        overlayCtx.lineTo(p2.x * trainOverlay.width, p2.y * trainOverlay.height);
+        overlayCtx.stroke();
+      }
+
+      // 2. จุดข้อนิ้ว
+      for (const lm of landmarks) {
+        overlayCtx.fillStyle = "#ff3366";
+        overlayCtx.beginPath();
+        overlayCtx.arc(lm.x * trainOverlay.width, lm.y * trainOverlay.height, 4, 0, 2 * Math.PI);
+        overlayCtx.fill();
+      }
+    }
+  }
+}
+
+async function processTrainFrame() {
+  if (!trainStream || !trainVideo || trainVideo.readyState < 2) {
+    animFrameId = requestAnimationFrame(processTrainFrame);
+    return;
+  }
+  if (mpHandsDetector) {
+    await mpHandsDetector.send({ image: trainVideo });
+  }
+  animFrameId = requestAnimationFrame(processTrainFrame);
+}
+
+async function toggleTrainCamera() {
+  const btn = $("#btn-train-cam");
+  const stateTag = $("#train-cam-state");
+  const trainCamBox = $("#train-cam");
+
+  if (trainStream) {
+    cancelAnimationFrame(animFrameId);
+    trainStream.getTracks().forEach((t) => t.stop());
+    trainStream = null;
+    if (trainVideo) trainVideo.srcObject = null;
+    if (overlayCtx) overlayCtx.clearRect(0, 0, trainOverlay.width, trainOverlay.height);
+    if (btn) btn.textContent = "Open Camera";
+    if (stateTag) stateTag.textContent = "Camera off";
+    if (trainCamBox) trainCamBox.classList.remove("on", "recording");
+    return false;
+  }
 
   try {
-    const res = await fetch("/api/train", { method: "POST" });
-    const data = await res.json();
+    initMediaPipeHands();
+    trainStream = await navigator.mediaDevices.getUserMedia({
+      video: { width: 640, height: 480 },
+      audio: false,
+    });
+    if (trainVideo) trainVideo.srcObject = trainStream;
+    if (btn) btn.textContent = "Close Camera";
+    if (stateTag) stateTag.textContent = "Camera Active";
+    if (trainCamBox) trainCamBox.classList.add("on");
 
-    if (res.ok && data.status === "success") {
-      setT("completed");
-      $("#t-fill").style.width = "100%";
-      $("#t-meta").textContent = "Training finished successfully!";
-      banner("Model retrained and updated on server!");
-      checkModel();
-    } else {
-      setT("error");
-      $("#t-fill").style.width = "0%";
-      err.textContent = data.message + (data.detail ? ` (${data.detail})` : "");
-    }
-  } catch (e) {
-    setT("error");
-    $("#t-fill").style.width = "0%";
-    err.textContent = "Failed to connect to server: " + e.message;
+    animFrameId = requestAnimationFrame(processTrainFrame);
+    return true;
+  } catch (err) {
+    alert("ไม่สามารถเปิดกล้องได้: " + err.message);
+    return false;
   }
-});
+}
 
-/* ================= RESULTS ================= */
+if ($("#btn-train-cam")) {
+  $("#btn-train-cam").addEventListener("click", toggleTrainCamera);
+}
+
+// บันทึกข้อมูลพร้อมนับถอยหลังและกรอบสีแดง
+// บันทึกข้อมูลพร้อมนับถอยหลัง 3 2 1 กลางจอ และป้าย REC มุมขอบจอ
+if ($("#btn-record")) {
+  $("#btn-record").addEventListener("click", async () => {
+    if (isCollecting) return;
+
+    const labelInput = $("#collect-label");
+    const label = labelInput ? labelInput.value.trim() : "";
+    const statusEl = $("#collect-status");
+    const btn = $("#btn-record");
+    
+    // ดึง Elements สดเพื่อป้องกัน null
+    const countdownEl = document.querySelector("#train-countdown");
+    const trainCamBox = document.querySelector("#train-cam");
+    const recBadge = document.querySelector("#train-rec-badge");
+    const recText = document.querySelector("#train-rec-text");
+
+    if (!label) {
+      alert("กรุณากรอกชื่อท่าทาง (Label) ก่อน!");
+      return;
+    }
+
+    if (!trainStream || !trainVideo.srcObject) {
+      if (statusEl) statusEl.textContent = "กำลังเปิดกล้อง...";
+      const ok = await toggleTrainCamera();
+      if (!ok) return;
+      await new Promise((r) => setTimeout(r, 600));
+    }
+
+    isCollecting = true;
+    btn.disabled = true;
+
+    // --- ช่วงที่ 1: นับถอยหลังเตรียมตัว 3, 2, 1 กลางหน้าจอ ---
+    let prepCount = 3;
+    if (countdownEl) {
+      countdownEl.style.display = "flex";
+      countdownEl.style.color = "#ffffff";
+      countdownEl.textContent = prepCount;
+    }
+    if (statusEl) statusEl.textContent = `เตรียมทำท่า '${label}'... เริ่มใน ${prepCount}`;
+
+    const prepTimer = setInterval(async () => {
+      prepCount--;
+      if (prepCount > 0) {
+        if (countdownEl) countdownEl.textContent = prepCount;
+        if (statusEl) statusEl.textContent = `เตรียมทำท่า '${label}'... เริ่มใน ${prepCount}`;
+      } else {
+        clearInterval(prepTimer);
+
+        // --- ซ่อนเลขนับถอยหลังตรงกลางจอทันที ไม่ให้บังหน้าและมือ ---
+        if (countdownEl) {
+          countdownEl.style.display = "none";
+        }
+
+        // --- ช่วงที่ 2: เริ่มบันทึกจริง 5 วินาที ---
+        // ใส่กรอบสีแดงกระพริบรอบจอ และเปิดป้าย REC ตรงขอบมุมบนขวา
+        if (trainCamBox) trainCamBox.classList.add("recording");
+        if (recBadge) recBadge.style.display = "flex";
+
+        let recSeconds = 5;
+        if (recText) recText.textContent = `REC ${recSeconds}s`;
+        if (statusEl) statusEl.textContent = `🔴 กำลังบันทึกท่า '${label}' (5 วินาที)... ค้างท่าไว้`;
+
+        let samplesCount = 0;
+        
+        // นับถอยหลังวินาทีที่ป้ายมุมขวาบน
+        const secTimer = setInterval(() => {
+          recSeconds--;
+          if (recSeconds >= 0 && recText) {
+            recText.textContent = `REC ${recSeconds}s`;
+          }
+        }, 1000);
+
+        const recInterval = setInterval(async () => {
+          if (!trainVideo.videoWidth || !trainCtx) return;
+
+          trainCtx.save();
+          trainCtx.translate(320, 0);
+          trainCtx.scale(-1, 1);
+          trainCtx.drawImage(trainVideo, 0, 0, 320, 240);
+          trainCtx.restore();
+
+          const frameB64 = trainCanvas.toDataURL("image/jpeg", 0.6);
+
+          try {
+            const res = await fetch("/api/collect", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ label: label, frame: frameB64 }),
+            });
+            const d = await res.json();
+            if (d.status === "success") {
+              samplesCount++;
+              if (statusEl) statusEl.textContent = `🔴 กำลังบันทึกท่า '${label}'... ได้แล้ว ${samplesCount} ตัวอย่าง`;
+            }
+          } catch (err) {
+            console.error("Collect error:", err);
+          }
+        }, 150);
+
+        // ครบ 5 วินาที -> สิ้นสุดการบันทึก
+        setTimeout(() => {
+          clearInterval(recInterval);
+          clearInterval(secTimer);
+
+          // เอากรอบสีแดงและป้ายมุมขวาบนออก
+          if (trainCamBox) trainCamBox.classList.remove("recording");
+          if (recBadge) recBadge.style.display = "none";
+
+          isCollecting = false;
+          btn.disabled = false;
+          if (statusEl) {
+            statusEl.textContent = `✅ บันทึกเสร็จสิ้น! ได้ตัวอย่างท่า '${label}' ทั้งหมด ${samplesCount} ตัวอย่างลง CSV เรียบร้อย`;
+          }
+        }, 5000);
+      }
+    }, 1000);
+  });
+}
+
+// สั่งเทรนโมเดลผ่าน API
+if ($("#cfg")) {
+  $("#cfg").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const err = $("#cfg-err");
+    const meta = $("#t-meta");
+    const fill = $("#t-fill");
+    const btn = $("#t-start");
+
+    if (err) err.textContent = "";
+    if (btn) btn.disabled = true;
+    if (meta) meta.textContent = "Status: กำลังเทรนโมเดลบนเซิร์ฟเวอร์ กรุณารอสักครู่...";
+    if (fill) fill.style.width = "50%";
+
+    try {
+      const res = await fetch("/api/train", { method: "POST" });
+      const data = await res.json();
+
+      if (res.ok && data.status === "success") {
+        if (fill) fill.style.width = "100%";
+        if (meta) meta.textContent = `Status: เทรนสำเร็จ! รู้จัก ${data.labels.length} ท่า: ${data.labels.join(", ")}`;
+        banner("โมเดลถูกเทรนและอัปเดตใหม่เรียบร้อยแล้ว!");
+        checkModel();
+      } else {
+        if (fill) fill.style.width = "0%";
+        if (meta) meta.textContent = "Status: การเทรนล้มเหลว";
+        if (err) err.textContent = data.message || "เกิดข้อผิดพลาดในการเทรน";
+      }
+    } catch (e) {
+      if (fill) fill.style.width = "0%";
+      if (meta) meta.textContent = "Status: การเชื่อมต่อล้มเหลว";
+      if (err) err.textContent = "ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์: " + e.message;
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  });
+}
+
+/* ================= RESULTS SNAPSHOT ================= */
 const EVAL = {
-  split: "Temporal 80/20 split (scripts/train_model.py)",
-  dataset: "data/gestures.csv — 1485 samples",
+  split: "Temporal 80/20 split",
+  dataset: "data/gestures.csv",
   labels: ["100", "Cry", "Dont know", "E", "I", "I LOVE YOU", "L", "Y", "mini heart", "no_sign", "o", "u", "v", "why"],
   matrix: [
     [20, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0],
@@ -265,12 +492,6 @@ const EVAL = {
   }).join("") + "</tr>"));
   $("#matrix").innerHTML = h;
   $("#perclass").innerHTML = "<tr><th scope='col'>Sign</th><th scope='col'>Precision</th><th scope='col'>Recall</th><th scope='col'>F1</th><th scope='col'>Test n</th></tr>" + LB.map((l, i) => `<tr><th scope="row">${esc(l)}</th><td class="mono">${pc(P[i])}</td><td class="mono${R[i] < 0.8 ? " warn" : ""}">${pc(R[i])}</td><td class="mono">${pc(F[i])}</td><td class="mono">${rowS[i]}</td></tr>`).join("");
-
-  let worst = null;
-  M.forEach((r, i) => r.forEach((v, j) => { if (i !== j && v && (!worst || v > worst.v)) worst = { v, i, j }; }));
-  $("#insight").textContent = worst
-    ? `Largest confusion: ${worst.v} of ${rowS[worst.i]} "${LB[worst.i]}" test samples were predicted as "${LB[worst.j]}".`
-    : "No off-diagonal errors in this snapshot.";
 })();
 
 function checkSnapshot() {

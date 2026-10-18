@@ -81,12 +81,22 @@ function startFrames() {
   if (L.timer) return;
   L.timer = setInterval(() => {
     if (L.paused || !L.ws || L.ws.readyState !== 1 || video.readyState < 2) return;
-    if (L.sent.length > 5) return;
-    ctx.save(); ctx.translate(320, 0); ctx.scale(-1, 1); ctx.drawImage(video, 0, 0, 320, 240); ctx.restore();
+    
+    // ป้องกันภาพค้างในคิว: ถ้าเฟรมก่อนหน้ายังประมวลผลไม่เสร็จ ให้ข้ามเฟรมนี้ไปก่อน
+    if (L.sent.length > 0) return;
+
+    ctx.save();
+    ctx.translate(320, 0);
+    ctx.scale(-1, 1);
+    ctx.drawImage(video, 0, 0, 320, 240);
+    ctx.restore();
+
     L.sent.push(performance.now());
-    L.ws.send(JSON.stringify({ frame: canvas.toDataURL("image/jpeg", 0.6) }));
-  }, 130);
+    // บีบอัดเหลือ 0.45 เพื่อความรวดเร็วในการส่งข้อมูลผ่านเครือข่าย
+    L.ws.send(JSON.stringify({ frame: canvas.toDataURL("image/jpeg", 0.45) }));
+  }, 220); // ส่งทุก 220ms (~4.5 FPS) ปรับสมดุลตามสเปก Cloud Free Tier
 }
+
 function stopFrames() { clearInterval(L.timer); L.timer = null; L.sent = []; }
 
 function onPrediction(d) {
@@ -191,7 +201,6 @@ let isCollecting = false;
 let mpHandsDetector = null;
 let animFrameId = null;
 
-// ข้อต่อนิ้วมือของ MediaPipe Hands 21 จุด
 const HAND_CONNECTIONS = [
   [0, 1], [1, 2], [2, 3], [3, 4],
   [0, 5], [5, 6], [6, 7], [7, 8],
@@ -221,7 +230,6 @@ function drawHandLandmarks(results) {
 
   if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
     for (const landmarks of results.multiHandLandmarks) {
-      // 1. เส้นกระดูกนิ้วมือ
       overlayCtx.strokeStyle = "#00e5ff";
       overlayCtx.lineWidth = 3;
       for (const [start, end] of HAND_CONNECTIONS) {
@@ -233,7 +241,6 @@ function drawHandLandmarks(results) {
         overlayCtx.stroke();
       }
 
-      // 2. จุดข้อนิ้ว
       for (const lm of landmarks) {
         overlayCtx.fillStyle = "#ff3366";
         overlayCtx.beginPath();
@@ -295,7 +302,6 @@ if ($("#btn-train-cam")) {
   $("#btn-train-cam").addEventListener("click", toggleTrainCamera);
 }
 
-// บันทึกข้อมูลพร้อมนับถอยหลังและกรอบสีแดง
 // บันทึกข้อมูลพร้อมนับถอยหลัง 3 2 1 กลางจอ และป้าย REC มุมขอบจอ
 if ($("#btn-record")) {
   $("#btn-record").addEventListener("click", async () => {
@@ -306,7 +312,6 @@ if ($("#btn-record")) {
     const statusEl = $("#collect-status");
     const btn = $("#btn-record");
     
-    // ดึง Elements สดเพื่อป้องกัน null
     const countdownEl = document.querySelector("#train-countdown");
     const trainCamBox = document.querySelector("#train-cam");
     const recBadge = document.querySelector("#train-rec-badge");
@@ -327,7 +332,6 @@ if ($("#btn-record")) {
     isCollecting = true;
     btn.disabled = true;
 
-    // --- ช่วงที่ 1: นับถอยหลังเตรียมตัว 3, 2, 1 กลางหน้าจอ ---
     let prepCount = 3;
     if (countdownEl) {
       countdownEl.style.display = "flex";
@@ -344,13 +348,10 @@ if ($("#btn-record")) {
       } else {
         clearInterval(prepTimer);
 
-        // --- ซ่อนเลขนับถอยหลังตรงกลางจอทันที ไม่ให้บังหน้าและมือ ---
         if (countdownEl) {
           countdownEl.style.display = "none";
         }
 
-        // --- ช่วงที่ 2: เริ่มบันทึกจริง 5 วินาที ---
-        // ใส่กรอบสีแดงกระพริบรอบจอ และเปิดป้าย REC ตรงขอบมุมบนขวา
         if (trainCamBox) trainCamBox.classList.add("recording");
         if (recBadge) recBadge.style.display = "flex";
 
@@ -360,7 +361,6 @@ if ($("#btn-record")) {
 
         let samplesCount = 0;
         
-        // นับถอยหลังวินาทีที่ป้ายมุมขวาบน
         const secTimer = setInterval(() => {
           recSeconds--;
           if (recSeconds >= 0 && recText) {
@@ -377,7 +377,7 @@ if ($("#btn-record")) {
           trainCtx.drawImage(trainVideo, 0, 0, 320, 240);
           trainCtx.restore();
 
-          const frameB64 = trainCanvas.toDataURL("image/jpeg", 0.6);
+          const frameB64 = trainCanvas.toDataURL("image/jpeg", 0.5);
 
           try {
             const res = await fetch("/api/collect", {
@@ -395,12 +395,10 @@ if ($("#btn-record")) {
           }
         }, 150);
 
-        // ครบ 5 วินาที -> สิ้นสุดการบันทึก
         setTimeout(() => {
           clearInterval(recInterval);
           clearInterval(secTimer);
 
-          // เอากรอบสีแดงและป้ายมุมขวาบนออก
           if (trainCamBox) trainCamBox.classList.remove("recording");
           if (recBadge) recBadge.style.display = "none";
 

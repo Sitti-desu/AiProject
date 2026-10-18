@@ -65,33 +65,33 @@
 
     <!-- TRAIN -->
     <section data-view="train" hidden>
-      <header class="head"><div><h1>Train Studio</h1><p class="muted">Prepare your data. Configure your model. Evaluate every run.</p></div>
-        <span class="badge demo">Demo mode — simulated run, no model is trained</span></header>
+      <header class="head"><div><h1>Train &amp; Collect Studio</h1><p class="muted">Collect hand gesture data and retrain your model directly from the browser.</p></div>
+        <span class="badge ok">Live Production Mode</span></header>
       <div class="train-grid">
-        <form class="panel" id="cfg" novalidate><h2>Configuration</h2>
-          <label for="c-arch">Architecture</label><select id="c-arch"><option>RandomForest (63 landmark features)</option></select>
-          <label for="c-ep">Epochs (5–100)</label><input id="c-ep" type="number" value="30" />
-          <label for="c-lr">Learning rate</label><input id="c-lr" type="number" step="any" value="0.001" />
-          <label for="c-bs">Batch size</label><select id="c-bs"><option>16</option><option selected>32</option><option>64</option></select>
+        <!-- กล่องเก็บข้อมูลท่าทางลง CSV -->
+        <div class="panel">
+          <h2>1. Data Collection</h2>
+          <label for="collect-label">Sign Label (ชื่อท่าทาง เช่น 'hello', 'no_sign')</label>
+          <input id="collect-label" type="text" placeholder="พิมพ์ชื่อท่าทาง..." />
+          <div style="margin-top:12px;" class="row wrap">
+            <button type="button" id="btn-record" class="btn primary">Record Samples (5 วินาที)</button>
+          </div>
+          <p id="collect-status" class="muted small" style="margin-top:8px;">เปิดกล้องใน Live Studio ก่อนเริ่มเก็บข้อมูล</p>
+        </div>
+
+        <!-- กล่องสั่งเทรนโมเดล -->
+        <form class="panel" id="cfg" novalidate>
+          <h2>2. Model Training</h2>
+          <p class="muted small">เทรน RandomForest (2 มือ, 126 landmark features) จากข้อมูลใน data/gestures.csv</p>
           <p id="cfg-err" class="err" role="alert"></p>
-          <div class="row wrap"><button type="submit" id="t-start" class="btn primary">Start training</button><button type="button" id="t-pause" class="btn" disabled>Pause</button><button type="button" id="t-cancel" class="btn" disabled>Cancel</button></div>
+          <div class="row wrap" style="margin-top:16px;">
+            <button type="submit" id="t-start" class="btn primary">Start Real Training</button>
+          </div>
+          <div style="margin-top:16px;">
+            <div class="mono small" id="t-meta">Status: Ready</div>
+            <div class="bar"><span id="t-fill"></span></div>
+          </div>
         </form>
-        <div class="panel"><h2>Live monitor <span id="t-state" class="badge">Idle</span></h2>
-          <div class="bar"><span id="t-fill"></span></div>
-          <div class="mono small" id="t-meta">Epoch 0 / 0</div>
-          <h3>Loss <span class="legend"><u></u> train <u class="dash"></u> validation</span></h3>
-          <svg id="ch-loss" class="chart" viewBox="0 0 320 120" role="img" aria-label="Loss per epoch"></svg>
-          <h3>Accuracy <span class="legend"><u></u> train <u class="dash"></u> validation</span></h3>
-          <svg id="ch-acc" class="chart" viewBox="0 0 320 120" role="img" aria-label="Accuracy per epoch"></svg>
-        </div>
-        <div class="panel real-train"><h2>Train the real model <span class="badge ok">runs on your computer</span></h2>
-          <p class="muted small">The preview above is a simulation. The model this app uses (models/model.pkl, RandomForest, 200 trees) is trained with the repo's scripts. Run them from the project folder, then restart the server.</p>
-          <ol class="steps">
-            <li><span>1. Collect samples for each sign (include <span class="mono">no_sign</span>)</span><code>py -3.11 scripts/collect_data.py</code><button type="button" class="btn" data-copy="py -3.11 scripts/collect_data.py">Copy</button></li>
-            <li><span>2. Train and print random vs temporal split scores</span><code>py -3.11 scripts/train_model.py</code><button type="button" class="btn" data-copy="py -3.11 scripts/train_model.py">Copy</button></li>
-            <li><span>3. Restart the web app to load the new model</span><code>py -3.11 -m uvicorn backend.main:app --reload --port 8000</code><button type="button" class="btn" data-copy="py -3.11 -m uvicorn backend.main:app --reload --port 8000">Copy</button></li>
-          </ol>
-        </div>
       </div>
     </section>
 
@@ -100,13 +100,13 @@
       <header class="head"><div><h1>Results &amp; Analytics</h1><p class="muted">Understand performance beyond a single prediction.</p></div>
         <span class="badge ok">Real evaluation snapshot</span></header>
       <p class="muted small" id="eval-src" style="margin:-12px 0 12px"></p>
-      <div id="snap-warn" class="banner warn" hidden>The model on the server has different classes from this snapshot — it was retrained. Run scripts/train_model.py and update the EVAL block in app.js.</div>
+      <div id="snap-warn" class="banner warn" hidden>The model on the server has different classes from this snapshot — it was retrained.</div>
       <div class="kpis" id="kpis"></div>
       <p class="insight" id="insight"></p>
       <div class="results-grid">
         <div class="panel"><h2>Confusion matrix</h2><p class="muted small">Rows are the true sign; columns are what the model predicted.</p><div class="scroll"><table id="matrix"></table></div></div>
         <div class="stack"><div class="panel"><h2>Per-class scores</h2><p class="muted small">Amber recall = under 80%.</p><div class="scroll"><table id="perclass"></table></div></div>
-        <div class="panel"><h2>Classes in the loaded model</h2><p class="muted small">From <span class="mono">/api/status</span>. <span class="mono">no_sign</span> is never added to the transcript.</p><div id="label-list" class="transcript"><span class="muted">Checking…</span></div></div></div>
+        <div class="panel"><h2>Classes in the loaded model</h2><p class="muted small">From <span class="mono">/api/status</span>.</p><div id="label-list" class="transcript"><span class="muted">Checking…</span></div></div></div>
       </div>
     </section>
   </main>

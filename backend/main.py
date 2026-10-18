@@ -10,6 +10,7 @@ import json
 import os
 import sys
 from collections import Counter, deque
+from pathlib import Path
 
 import cv2
 import joblib
@@ -32,13 +33,13 @@ CSV_PATH = os.path.join(BASE_DIR, "data", "gestures.csv")
 
 mp_hands = mp.solutions.hands
 
-# ----- ปรับค่า smoothing/threshold ได้ตรงนี้ -----
+# ----- ปรับค่า smoothing/threshold -----
 SMOOTHING_WINDOW = 10
 STABLE_RATIO = 0.7
 CONF_THRESHOLD = 0.55
 IGNORE_LABEL = "no_sign"
 MAX_SENTENCE_WORDS = 8
-# --------------------------------------------------
+# ---------------------------------------
 
 app = FastAPI(title="TSL Signal Decoder")
 
@@ -50,34 +51,43 @@ if os.path.exists(MODEL_PATH):
         print(f"Warning: โหลด model.pkl ไม่สำเร็จ ({e})")
 
 
-@app.get("/")
-def serve_index():
-    return FileResponse(os.path.join(FRONTEND_DIR, "index.html"))
+def decode_frame(frame_b64: str):
+    try:
+        header_free = frame_b64.split(",")[-1]
+        img_bytes = base64.b64decode(header_free)
+        np_arr = np.frombuffer(img_bytes, dtype=np.uint8)
+        return cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+    except Exception:
+        return None
 
 
-app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
-
+# ---------------- API ENDPOINTS ----------------
 
 @app.get("/api/status")
 def status():
-    """ให้ frontend เช็คได้ว่าโมเดลพร้อมใช้งานไหม และรู้จัก label อะไรบ้าง"""
+    """ตรวจสอบสถานะความพร้อมของโมเดล"""
     if _model_bundle is None:
         return {"model_loaded": False, "labels": []}
-    return {"model_loaded": True, "labels": _model_bundle["labels"]}
+    labels = _model_bundle.get("labels", [])
+    if hasattr(labels, "tolist"):
+        labels = labels.tolist()
+    return {"model_loaded": True, "labels": list(labels)}
 
 
-# Model schema สำหรับรับข้อมูลบันทึกลง CSV จากกล้องหน้าเว็บ
 class CollectFrameRequest(BaseModel):
     label: str
-    frame: str  # DataURL / base64 jpeg
+    frame: str
 
 
 @app.post("/api/collect")
 def collect_sample(req: CollectFrameRequest):
-    """รับเฟรมภาพจากหน้าเว็บ สกัด Landmarks 2 มือ แล้วบันทึกต่อท้าย gestures.csv"""
+    """บันทึกพิกัดมือลงใน data/gestures.csv"""
     image = decode_frame(req.frame)
     if image is None:
-        return JSONResponse(status_code=400, content={"status": "error", "message": "ถอดรหัสรูปภาพไม่สำเร็จ"})
+        return JSONResponse(
+            status_code=400,
+            content={"status": "error", "message": "ถอดรหัสรูปภาพไม่สำเร็จ"}
+        )
 
     rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     with mp_hands.Hands(
@@ -106,30 +116,39 @@ def collect_sample(req: CollectFrameRequest):
 
 @app.post("/api/train")
 def run_train():
-    """สั่งเทรนโมเดลใหม่จาก gestures.csv ทันที"""
+    """สั่งรันเทรนโมเดล RandomForest จาก CSV ใหม่ทันที"""
     global _model_bundle
     try:
+        os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
+
+        if not os.path.exists(CSV_PATH):
+            return JSONResponse(
+                status_code=400,
+                content={"status": "error", "message": "ไม่พบไฟล์ data/gestures.csv กรุณาบันทึกท่าทางก่อนสั่งเทรน"}
+            )
+
         labels = train_model_from_csv(csv_path=CSV_PATH, output_path=MODEL_PATH)
+
         if os.path.exists(MODEL_PATH):
             _model_bundle = joblib.load(MODEL_PATH)
+
+        labels_list = list(labels) if labels is not None else []
+        if hasattr(labels_list, "tolist"):
+            labels_list = labels_list.tolist()
+
         return {
             "status": "success",
             "message": "เทรนโมเดลสำเร็จและอัปเดตระบบแล้ว",
-            "labels": labels,
+            "labels": labels_list,
         }
     except Exception as e:
         return JSONResponse(
             status_code=500,
-            content={"status": "error", "message": f"เทรนโมเดลไม่สำเร็จ: {str(e)}"},
+            content={"status": "error", "message": f"เทรนโมเดลไม่สำเร็จ: {str(e)}"}
         )
 
 
-def decode_frame(frame_b64: str):
-    header_free = frame_b64.split(",")[-1]
-    img_bytes = base64.b64decode(header_free)
-    np_arr = np.frombuffer(img_bytes, dtype=np.uint8)
-    return cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-
+# ---------------- WEBSOCKET ENDPOINT ----------------
 
 @app.websocket("/ws/predict")
 async def predict_ws(websocket: WebSocket):
@@ -230,3 +249,17 @@ async def predict_ws(websocket: WebSocket):
         pass
     finally:
         hands.close()
+
+
+# ---------------- STATIC & FRONTEND ROUTING ----------------
+
+app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
+
+
+@app.get("/{full_path:path}")
+def serve_spa(full_path: str):
+    """ส่ง index.html สำหรับทุก Path ที่ไม่ใช่ API หรือ Static Files"""
+    file_path = os.path.join(FRONTEND_DIR, full_path)
+    if full_path and os.path.exists(file_path) and os.path.isfile(file_path):
+        return FileResponse(file_path)
+    return FileResponse(os.path.join(FRONTEND_DIR, "index.html"))

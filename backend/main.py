@@ -3,7 +3,8 @@ backend/main.py
 FastAPI server: เสิร์ฟหน้าเว็บ frontend + WebSocket endpoint สำหรับรับเฟรมสด
 พร้อม API บันทึกข้อมูลท่าทางลง CSV และสั่งเทรนโมเดลใหม่ผ่านหน้าเว็บ
 """
-
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning)
 import base64
 import csv
 import json

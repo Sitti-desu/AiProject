@@ -302,7 +302,7 @@ if ($("#btn-train-cam")) {
   $("#btn-train-cam").addEventListener("click", toggleTrainCamera);
 }
 
-// บันทึกข้อมูลพร้อมนับถอยหลัง 3 2 1 กลางจอ และป้าย REC มุมขอบจอ
+// บันทึกข้อมูลท่าทาง (แก้บั๊กบันทึกได้ 0 ตัวอย่าง)
 if ($("#btn-record")) {
   $("#btn-record").addEventListener("click", async () => {
     if (isCollecting) return;
@@ -326,12 +326,13 @@ if ($("#btn-record")) {
       if (statusEl) statusEl.textContent = "กำลังเปิดกล้อง...";
       const ok = await toggleTrainCamera();
       if (!ok) return;
-      await new Promise((r) => setTimeout(r, 600));
+      await new Promise((r) => setTimeout(r, 800));
     }
 
     isCollecting = true;
     btn.disabled = true;
 
+    // 1. นับถอยหลังเตรียมตัว 3, 2, 1 กลางจอ
     let prepCount = 3;
     if (countdownEl) {
       countdownEl.style.display = "flex";
@@ -348,19 +349,17 @@ if ($("#btn-record")) {
       } else {
         clearInterval(prepTimer);
 
-        if (countdownEl) {
-          countdownEl.style.display = "none";
-        }
-
+        if (countdownEl) countdownEl.style.display = "none";
         if (trainCamBox) trainCamBox.classList.add("recording");
         if (recBadge) recBadge.style.display = "flex";
 
         let recSeconds = 5;
         if (recText) recText.textContent = `REC ${recSeconds}s`;
-        if (statusEl) statusEl.textContent = `🔴 กำลังบันทึกท่า '${label}' (5 วินาที)... ค้างท่าไว้`;
+        if (statusEl) statusEl.textContent = `🔴 กำลังบันทึกท่า '${label}' (ค้างท่าไว้ในกล้อง)...`;
 
         let samplesCount = 0;
-        
+        let isSending = false;
+
         const secTimer = setInterval(() => {
           recSeconds--;
           if (recSeconds >= 0 && recText) {
@@ -368,16 +367,24 @@ if ($("#btn-record")) {
           }
         }, 1000);
 
+        // สร้าง Offscreen Canvas เพื่อให้มั่นใจว่าดึงภาพจาก Video ได้ 100%
+        const captureCanvas = document.createElement("canvas");
+        captureCanvas.width = 320;
+        captureCanvas.height = 240;
+        const capCtx = captureCanvas.getContext("2d");
+
+        // ส่งภาพทุกๆ 180ms โดยเช็คไม่ให้ Request ซ้อนกัน
         const recInterval = setInterval(async () => {
-          if (!trainVideo.videoWidth || !trainCtx) return;
+          if (!trainVideo.videoWidth || isSending) return;
 
-          trainCtx.save();
-          trainCtx.translate(320, 0);
-          trainCtx.scale(-1, 1);
-          trainCtx.drawImage(trainVideo, 0, 0, 320, 240);
-          trainCtx.restore();
+          isSending = true;
+          capCtx.save();
+          capCtx.translate(320, 0);
+          capCtx.scale(-1, 1);
+          capCtx.drawImage(trainVideo, 0, 0, 320, 240);
+          capCtx.restore();
 
-          const frameB64 = trainCanvas.toDataURL("image/jpeg", 0.5);
+          const frameB64 = captureCanvas.toDataURL("image/jpeg", 0.6);
 
           try {
             const res = await fetch("/api/collect", {
@@ -389,12 +396,17 @@ if ($("#btn-record")) {
             if (d.status === "success") {
               samplesCount++;
               if (statusEl) statusEl.textContent = `🔴 กำลังบันทึกท่า '${label}'... ได้แล้ว ${samplesCount} ตัวอย่าง`;
+            } else if (d.status === "no_hand") {
+              if (statusEl) statusEl.textContent = `⚠️ มองไม่เห็นมือ! กรุณายกมือเข้ามาในจอกล้อง (ได้ ${samplesCount} ตัวอย่าง)`;
             }
           } catch (err) {
             console.error("Collect error:", err);
+          } finally {
+            isSending = false;
           }
-        }, 150);
+        }, 180);
 
+        // ครบ 5 วินาที สิ้นสุดการอัด
         setTimeout(() => {
           clearInterval(recInterval);
           clearInterval(secTimer);
@@ -405,9 +417,13 @@ if ($("#btn-record")) {
           isCollecting = false;
           btn.disabled = false;
           if (statusEl) {
-            statusEl.textContent = `✅ บันทึกเสร็จสิ้น! ได้ตัวอย่างท่า '${label}' ทั้งหมด ${samplesCount} ตัวอย่างลง CSV เรียบร้อย`;
+            if (samplesCount > 0) {
+              statusEl.textContent = `✅ บันทึกเสร็จสิ้น! ได้ตัวอย่างท่า '${label}' ทั้งหมด ${samplesCount} ตัวอย่างลง CSV เรียบร้อย`;
+            } else {
+              statusEl.textContent = `❌ ไม่ได้ตัวอย่างเลย (0 ตัวอย่าง): ตอนอัดกล้องมองไม่เห็นมือ หรือเซิร์ฟเวอร์ยังไม่ตอบรับ กรุณาลองใหม่อีกครั้ง`;
+            }
           }
-        }, 5000);
+        }, 5200);
       }
     }, 1000);
   });

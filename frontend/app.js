@@ -302,7 +302,7 @@ if ($("#btn-train-cam")) {
   $("#btn-train-cam").addEventListener("click", toggleTrainCamera);
 }
 
-// บันทึกข้อมูลท่าทาง (แก้บั๊กบันทึกได้ 0 ตัวอย่าง)
+// บันทึกข้อมูลท่าทาง (ปรับเป็น 20 วินาที)
 if ($("#btn-record")) {
   $("#btn-record").addEventListener("click", async () => {
     if (isCollecting) return;
@@ -353,7 +353,8 @@ if ($("#btn-record")) {
         if (trainCamBox) trainCamBox.classList.add("recording");
         if (recBadge) recBadge.style.display = "flex";
 
-        let recSeconds = 5;
+        // 👉 ปรับเวลาตรงนี้เป็น 20 วินาที
+        let recSeconds = 20;
         if (recText) recText.textContent = `REC ${recSeconds}s`;
         if (statusEl) statusEl.textContent = `🔴 กำลังบันทึกท่า '${label}' (ค้างท่าไว้ในกล้อง)...`;
 
@@ -367,13 +368,11 @@ if ($("#btn-record")) {
           }
         }, 1000);
 
-        // สร้าง Offscreen Canvas เพื่อให้มั่นใจว่าดึงภาพจาก Video ได้ 100%
         const captureCanvas = document.createElement("canvas");
         captureCanvas.width = 320;
         captureCanvas.height = 240;
         const capCtx = captureCanvas.getContext("2d");
 
-        // ส่งภาพทุกๆ 180ms โดยเช็คไม่ให้ Request ซ้อนกัน
         const recInterval = setInterval(async () => {
           if (!trainVideo.videoWidth || isSending) return;
 
@@ -406,7 +405,7 @@ if ($("#btn-record")) {
           }
         }, 180);
 
-        // ครบ 5 วินาที สิ้นสุดการอัด
+        // 👉 ปรับตรงนี้เป็น 20200 ms (20.2 วินาที)
         setTimeout(() => {
           clearInterval(recInterval);
           clearInterval(secTimer);
@@ -423,12 +422,11 @@ if ($("#btn-record")) {
               statusEl.textContent = `❌ ไม่ได้ตัวอย่างเลย (0 ตัวอย่าง): ตอนอัดกล้องมองไม่เห็นมือ หรือเซิร์ฟเวอร์ยังไม่ตอบรับ กรุณาลองใหม่อีกครั้ง`;
             }
           }
-        }, 5200);
+        }, 20200);
       }
     }, 1000);
   });
 }
-
 // สั่งเทรนโมเดลผ่าน API
 if ($("#cfg")) {
   $("#cfg").addEventListener("submit", async (ev) => {
